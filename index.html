@@ -23,13 +23,38 @@
   #menu.on{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
   #menu button{font:14px -apple-system,sans-serif;color:#fff;background:rgba(255,255,255,.12);border:0;border-radius:12px;padding:10px 14px}
   #file{display:none}
+  #menu{flex-wrap:wrap;justify-content:center;width:max-content;max-width:92vw}
+  #hud{position:fixed;inset:0;pointer-events:none;color:#fff;font-family:"Courier New",monospace;text-shadow:0 0 6px #000,0 0 2px #000;display:none}
+  #hud.on{display:block}
+  #hDate{position:absolute;top:calc(env(safe-area-inset-top) + 58px);width:100%;text-align:center;font:600 22px -apple-system,sans-serif}
+  #hTime{position:absolute;top:calc(env(safe-area-inset-top) + 84px);width:100%;text-align:center;font:700 24vw/1 -apple-system,sans-serif;
+    letter-spacing:-.02em;text-shadow:0 0 18px var(--acc,#3f6),0 0 4px #000}
+  #hCoins{position:absolute;top:calc(env(safe-area-inset-top) + 98px + 25vw);left:8%;right:8%;display:flex;gap:6%}
+  .coin{flex:1;font:bold 13px "Courier New",monospace;white-space:nowrap}
+  .coin canvas{position:static;width:100%;height:46px;display:block;margin-top:4px}
+  #hWx{position:absolute;right:8px;top:calc(env(safe-area-inset-top) + 56px);writing-mode:vertical-rl;font:bold 12px "Courier New",monospace;letter-spacing:.18em}
+  #hQuote{position:absolute;top:47%;width:100%;text-align:center;font:bold 15px "Courier New",monospace;letter-spacing:.35em;white-space:pre}
+  #hNote{position:absolute;top:55%;left:6%;right:6%;text-align:center;font:bold 14px/1.5 "Courier New",monospace;letter-spacing:.12em;white-space:pre-wrap}
+  #hud.clock #hCoins,#hud.clock #hWx,#hud.clock #hQuote,#hud.clock #hNote{display:none}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="title"></div>
 <div id="hint">点一下换颜色 · 拖动吹风 · 双击暂停 · 长按打开菜单</div>
+<div id="hud">
+  <div id="hWx"></div>
+  <div id="hDate"></div><div id="hTime"></div>
+  <div id="hCoins">
+    <div class="coin" id="BTCUSDT"><span>BTC/USDT</span> <b></b><canvas></canvas></div>
+    <div class="coin" id="ETHUSDT"><span>ETH/USDT</span> <b></b><canvas></canvas></div>
+  </div>
+  <div id="hQuote"></div>
+  <div id="hNote"></div>
+</div>
 <div id="menu">
+  <button id="bHud">🕒 信息</button>
+  <button id="bNote">📝 备忘</button>
   <button id="bPhoto">📷 照片</button>
   <button id="bClear">✕ 去照片</button>
   <button id="bSpeed">⚡ 速度</button>
@@ -38,14 +63,19 @@
 <input id="file" type="file" accept="image/*">
 <script>
 /* ===== 默认设置；在页面里改过的会记住 ===== */
-const STORE = "coderain.v3";
+const Q = new URLSearchParams(location.search);
+const STORE = "coderain.v3" + location.search;   // 每个版本（不同网址）各自记住设置
 const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; } })();
 const SETTINGS = Object.assign({
   theme: "green",          // green / cyan / red / gold / purple / rainbow
   title: "Wake up...",
   speed: 1.0,              // 0.5 慢 ~ 2 快
-  density: 1.0             // 0.5 稀 ~ 1.5 密
+  density: 1.0,            // 0.5 稀 ~ 1.5 密
+  hud: "off",             // off / clock / full
+  note: ""
 }, saved);
+for (const k of ["theme", "hud", "title"]) if (Q.has(k) && !(k in saved)) SETTINGS[k] = Q.get(k);
+if (Q.has("speed") && !("speed" in saved)) SETTINGS.speed = +Q.get("speed") || 1;
 function save(extra) {
   try { localStorage.setItem(STORE, JSON.stringify(Object.assign({}, SETTINGS, extra))); } catch (e) {}
 }
@@ -248,7 +278,7 @@ function frame(now) {
 // 开场标题：逐字解码出来
 function typeTitle() {
   const el = document.getElementById("title"), target = SETTINGS.title;
-  if (!target) return;
+  if (!target || SETTINGS.hud !== "off") return;
   el.style.textShadow = `0 0 18px ${color(hueFor(0,2),60,0.9)}`;
   el.style.opacity = 1;
   let i = 0;
@@ -281,6 +311,70 @@ document.getElementById("bTitle").onclick = () => {
   if (t === null) return;
   SETTINGS.title = t.trim(); save(); closeMenu(); typeTitle();
 };
+
+// ===== 锁屏风格信息层：时间、币价、天气、名言、备忘 =====
+const hud = document.getElementById("hud");
+const HUDS = ["off", "clock", "full"];
+function applyHud() {
+  hud.className = SETTINGS.hud === "off" ? "" : "on " + SETTINGS.hud;
+  if (SETTINGS.hud === "full") { coins(); weather(); }
+  const n = document.getElementById("hNote");
+  n.textContent = SETTINGS.note ? SETTINGS.note.split(/[;；]/).map(s => "■ " + s.trim().toUpperCase()).join("\n") : "";
+}
+function tick() {
+  const d = new Date();
+  document.documentElement.style.setProperty("--acc", color(hueFor(0, 2), 60, 1));
+  document.getElementById("hDate").textContent = d.toLocaleDateString("en-GB", {weekday: "short", day: "numeric", month: "short"});
+  document.getElementById("hTime").textContent = (d.getHours() % 12 || 12) + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+async function coins() {
+  if (SETTINGS.hud !== "full") return;
+  for (const sym of ["BTCUSDT", "ETHUSDT"]) {
+    try {
+      const k = await (await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1h&limit=48`)).json();
+      const c = k.map(x => +x[4]), last = c[c.length - 1], up = last >= c[0];
+      const box = document.getElementById(sym);
+      box.querySelector("b").textContent = (up ? "▲" : "▼") + last.toFixed(1);
+      const cv2 = box.querySelector("canvas"), w = cv2.clientWidth, h = cv2.clientHeight;
+      cv2.width = w * 2; cv2.height = h * 2;
+      const o = cv2.getContext("2d"); o.scale(2, 2);
+      const lo = Math.min(...c), hi = Math.max(...c), Y = v => h - 3 - (v - lo) / (hi - lo || 1) * (h - 6);
+      o.setLineDash([3, 3]); o.strokeStyle = "rgba(255,255,255,.6)"; o.beginPath(); o.moveTo(0, Y(c[0])); o.lineTo(w, Y(c[0])); o.stroke();
+      o.setLineDash([]); o.lineWidth = 1.6; o.strokeStyle = "#fff"; o.shadowColor = color(hueFor(0, 2), 60, 1); o.shadowBlur = 6;
+      o.beginPath(); c.forEach((v, i) => o[i ? "lineTo" : "moveTo"](i / (c.length - 1) * w, Y(v))); o.stroke();
+    } catch (e) {}
+  }
+}
+const WX = c => c === 0 ? "CLEAR" : c <= 3 ? "CLOUDY" : c <= 48 ? "FOG" : c <= 67 ? "RAIN" : c <= 82 ? "SHOWERS" : "STORM";
+async function weather() {
+  if (SETTINGS.hud !== "full") return;
+  try {
+    const r = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=3.139&longitude=101.687&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,sunset&timezone=Asia%2FKuala_Lumpur&forecast_days=1")).json();
+    document.getElementById("hWx").textContent =
+      `吉隆坡 ${WX(r.current.weather_code)} · NOW ${Math.round(r.current.temperature_2m)}°C · H ${Math.round(r.daily.temperature_2m_max[0])}° L ${Math.round(r.daily.temperature_2m_min[0])}° · SUNSET ${r.daily.sunset[0].slice(11)}`;
+  } catch (e) {}
+}
+const QUOTES = ["WAKE UP...", "FOLLOW THE\nWHITE RABBIT", "THERE IS\nNO SPOON", "FREE YOUR MIND", "KNOCK, KNOCK", "WHOA\n-NEO"];
+let qi = (Math.random() * QUOTES.length) | 0;
+function quote() {
+  const el = document.getElementById("hQuote"), target = QUOTES[qi++ % QUOTES.length];
+  let i = 0;
+  const iv = setInterval(() => {
+    i += 0.4;
+    el.textContent = target.split("").map((ch, j) => j < i || ch === "\n" || ch === " " ? ch : rg()).join("");
+    if (i >= target.length) clearInterval(iv);
+  }, 40);
+}
+setInterval(tick, 1000); setInterval(coins, 60000); setInterval(weather, 1800000); setInterval(quote, 20000);
+document.getElementById("bHud").onclick = () => {
+  SETTINGS.hud = HUDS[(HUDS.indexOf(SETTINGS.hud) + 1) % HUDS.length]; save(); applyHud();
+};
+document.getElementById("bNote").onclick = () => {
+  const t = prompt("备忘（多条用分号隔开，留空就不显示）", SETTINGS.note);
+  if (t === null) return;
+  SETTINGS.note = t.trim(); save(); closeMenu(); applyHud();
+};
+tick(); quote(); applyHud();
 
 // 交互
 let lastTap = 0, dragX = null, moved = false, pressTimer = null, longPressed = false;
