@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Code Rain</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Code Rain">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #title{position:fixed;left:0;right:0;top:42%;text-align:center;font:600 7vw/1.2 "Courier New",monospace;
+    letter-spacing:.12em;color:#fff;pointer-events:none;opacity:0;transition:opacity 1.2s}
+  #hint{position:fixed;bottom:calc(18px + env(safe-area-inset-bottom));left:0;right:0;text-align:center;
+    font:12px -apple-system,sans-serif;color:#fff;opacity:0;transition:opacity 1s;pointer-events:none}
+  #menu{position:fixed;left:50%;bottom:calc(40px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);
+    display:flex;gap:10px;padding:10px;border-radius:18px;background:rgba(20,20,20,.72);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    opacity:0;pointer-events:none;transition:opacity .25s,transform .25s}
+  #menu.on{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+  #menu button{font:14px -apple-system,sans-serif;color:#fff;background:rgba(255,255,255,.12);border:0;border-radius:12px;padding:10px 14px}
+  #file{display:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title"></div>
+<div id="hint">点一下换颜色 · 拖动吹风 · 双击暂停 · 长按打开菜单</div>
+<div id="menu">
+  <button id="bPhoto">📷 照片</button>
+  <button id="bClear">✕ 去照片</button>
+  <button id="bSpeed">⚡ 速度</button>
+  <button id="bTitle">🔤 标题</button>
+</div>
+<input id="file" type="file" accept="image/*">
+<script>
+/* ===== 默认设置；在页面里改过的会记住 ===== */
+const STORE = "coderain.v3";
+const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; } })();
+const SETTINGS = Object.assign({
+  theme: "green",          // green / cyan / red / gold / purple / rainbow
+  title: "Wake up...",
+  speed: 1.0,              // 0.5 慢 ~ 2 快
+  density: 1.0             // 0.5 稀 ~ 1.5 密
+}, saved);
+function save(extra) {
+  try { localStorage.setItem(STORE, JSON.stringify(Object.assign({}, SETTINGS, extra))); } catch (e) {}
+}
+/* ===================================== */
+
+const THEMES = {
+  green:  {h:130,s:100}, cyan:{h:185,s:100}, red:{h:355,s:95},
+  gold:   {h:44, s:100}, purple:{h:280,s:90}, rainbow:{h:null,s:90}
+};
+const ORDER = Object.keys(THEMES);
+let themeIdx = Math.max(0, ORDER.indexOf(SETTINGS.theme));
+
+const GLYPHS = ("ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ" + "0123456789" + "Z:・.\"=*+-<>¦｜").split("");
+const rg = () => GLYPHS[(Math.random() * GLYPHS.length) | 0];
+
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W, H, DPR, layers = [], lum = null, lumCols = 0, lumRows = 0, lumCell = 0;
+let wind = 0, windTarget = 0, paused = false, ripples = [], t0 = performance.now();
+
+// 三层景深：远处小而暗、带模糊，近处大而亮
+const LAYER_DEF = [
+  {size:11, speed:0.55, alpha:0.35, blur:1.2},
+  {size:17, speed:0.85, alpha:0.7,  blur:0},
+  {size:26, speed:1.25, alpha:1.0,  blur:0}
+];
+
+function color(h, l, a) { return `hsla(${h},${THEMES[ORDER[themeIdx]].s}%,${l}%,${a})`; }
+function hueFor(col, layer) {
+  const th = THEMES[ORDER[themeIdx]];
+  if (th.h !== null) return th.h;
+  return (col * 9 + layer * 40 + (performance.now() - t0) / 40) % 360;
+}
+
+function makeDrop(L, x, initial) {
+  const len = 8 + ((Math.random() * 22) | 0);
+  return {
+    x, y: initial ? Math.random() * H * 1.2 - H * 0.2 : -Math.random() * H * 0.6,
+    v: (0.6 + Math.random() * 0.8) * L.speed * SETTINGS.speed,
+    len, chars: Array.from({length: len}, rg), tick: 0
+  };
+}
+
+function build() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layers = LAYER_DEF.map((d, li) => {
+    const cols = Math.ceil(W / d.size);
+    const drops = [];
+    for (let i = 0; i < cols; i++) {
+      if (Math.random() < (img ? 0.85 : 0.55) * SETTINGS.density) drops.push(makeDrop(d, i * d.size, true));
+    }
+    return {...d, li, cols, drops};
+  });
+  buildLum();
+}
+
+// 背景图：按亮度控制代码的明暗，让照片「由代码组成」
+let img = null;
+function buildLum() {
+  if (!img) return;
+  lumCell = 8;
+  lumCols = Math.ceil(W / lumCell); lumRows = Math.ceil(H / lumCell);
+  const oc = document.createElement("canvas"); oc.width = lumCols; oc.height = lumRows;
+  const o = oc.getContext("2d");
+  const s = Math.max(lumCols / img.width, lumRows / img.height);
+  const iw = img.width * s, ih = img.height * s;
+  o.drawImage(img, (lumCols - iw) / 2, (lumRows - ih) / 2, iw, ih);
+  const d = o.getImageData(0, 0, lumCols, lumRows).data;
+  lum = new Float32Array(lumCols * lumRows);
+  for (let i = 0; i < lum.length; i++) lum[i] = (0.2126 * d[i*4] + 0.7152 * d[i*4+1] + 0.0722 * d[i*4+2]) / 255;
+}
+function lumAt(x, y) {
+  if (!lum) return 1;
+  const cx = Math.min(lumCols - 1, Math.max(0, (x / lumCell) | 0));
+  const cy = Math.min(lumRows - 1, Math.max(0, (y / lumCell) | 0));
+  const v = lum[cy * lumCols + cx];
+  return 0.04 + v * v * 2.2;          // 暗处几乎不显，亮处更亮，轮廓更清楚
+}
+
+// 照片染成主题色，当作底图微微透出来
+let tint = null, tintHue = -1;
+function tinted(h) {
+  if (tint && tintHue === h) return tint;
+  tint = document.createElement("canvas");
+  tint.width = W * DPR; tint.height = H * DPR;
+  const o = tint.getContext("2d");
+  const s = Math.max(tint.width / img.width, tint.height / img.height);
+  const iw = img.width * s, ih = img.height * s, ix = (tint.width - iw) / 2, iy = (tint.height - ih) / 2;
+  o.drawImage(img, ix, iy, iw, ih);
+  o.globalCompositeOperation = "multiply";
+  o.fillStyle = `hsl(${h},100%,50%)`; o.fillRect(0, 0, tint.width, tint.height);
+  o.globalCompositeOperation = "destination-in";
+  o.drawImage(img, ix, iy, iw, ih);
+  tintHue = h;
+  return tint;
+}
+function loadImage(src) {
+  const im = new Image();
+  im.onload = () => { img = im; tint = null; build(); };
+  im.src = src;
+}
+const savedPhoto = (() => { try { return localStorage.getItem(STORE + ".photo"); } catch (e) { return null; } })();
+if (savedPhoto) loadImage(savedPhoto);
+
+// 选照片：缩到 900px 再存，手机上不卡，下次打开还在
+document.getElementById("file").addEventListener("change", e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f), im = new Image();
+  im.onload = () => {
+    const s = Math.min(1, 900 / Math.max(im.width, im.height));
+    const oc = document.createElement("canvas");
+    oc.width = Math.round(im.width * s); oc.height = Math.round(im.height * s);
+    oc.getContext("2d").drawImage(im, 0, 0, oc.width, oc.height);
+    const data = oc.toDataURL("image/jpeg", 0.82);
+    URL.revokeObjectURL(url);
+    try { localStorage.setItem(STORE + ".photo", data); } catch (err) {}
+    loadImage(data);
+  };
+  im.src = url;
+  e.target.value = "";
+});
+
+function rippleBoost(x, y) {
+  if (!ripples.length) return 0;
+  let b = 0;
+  for (const r of ripples) {
+    const d = Math.hypot(x - r.x, y - r.y);
+    const band = Math.abs(d - r.r);
+    if (band < 40) b += (1 - band / 40) * r.a;
+  }
+  return b;
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (paused) return;
+  wind += (windTarget - wind) * 0.05;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  if (img && lum) {
+    const th = THEMES[ORDER[themeIdx]];
+    ctx.globalAlpha = 0.22;
+    ctx.drawImage(tinted(th.h === null ? 130 : th.h), 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+
+  // 整层镜像一次（电影里是镜像字），不再逐字 save/restore
+  ctx.setTransform(-DPR, 0, 0, DPR, W * DPR, 0);
+  for (const L of layers) {
+    ctx.font = `${L.size}px "Hiragino Sans","MS Gothic",monospace`;
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.filter = L.blur ? `blur(${L.blur}px)` : "none";
+    for (const dr of L.drops) {
+      dr.y += dr.v * L.size * 0.16;
+      dr.x += wind * L.speed;
+      if (dr.x < -L.size) dr.x += W + L.size; else if (dr.x > W + L.size) dr.x -= W + L.size;
+      if (++dr.tick % 4 === 0) dr.chars[(Math.random() * dr.len) | 0] = rg();     // 尾巴随机闪变
+      if (Math.random() < 0.04) { dr.chars.unshift(rg()); dr.chars.pop(); }
+      const hue = hueFor((dr.x / L.size) | 0, L.li);
+      const sx = W - dr.x - L.size / 2;   // 镜像后的屏幕坐标
+      for (let k = 0; k < dr.len; k++) {
+        const y = dr.y - k * L.size;
+        if (y < -L.size || y > H) continue;
+        const fade = 1 - k / dr.len;
+        let a = L.alpha * fade * fade * lumAt(sx, y);
+        const boost = rippleBoost(sx, y);
+        a = Math.min(1, a + boost * 0.8);
+        if (a < 0.02) continue;
+        if (k === 0) {
+          // 只有领头字发光，光晕开销小
+          ctx.shadowColor = color(hue, 70, 1); ctx.shadowBlur = 12 * L.alpha;
+          ctx.fillStyle = `rgba(235,255,240,${Math.min(1, L.alpha + 0.2)})`;
+          ctx.fillText(dr.chars[k], sx, y);
+          ctx.shadowBlur = 0;
+          continue;
+        }
+        ctx.fillStyle = color(hue, 45 + fade * 20 + boost * 30, a);
+        ctx.fillText(dr.chars[k], sx, y);
+      }
+      ctx.shadowBlur = 0;
+      if (dr.y - dr.len * L.size > H) Object.assign(dr, makeDrop(L, dr.x, false));
+    }
+  }
+  ctx.filter = "none"; ctx.shadowBlur = 0;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // 点击波纹
+  for (const r of ripples) { r.r += 9; r.a *= 0.965; }
+  ripples = ripples.filter(r => r.a > 0.03);
+
+  // 暗角，让画面更有层次
+  const g = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.3, W/2, H/2, Math.max(W,H)*0.75);
+  g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,0.55)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+// 开场标题：逐字解码出来
+function typeTitle() {
+  const el = document.getElementById("title"), target = SETTINGS.title;
+  if (!target) return;
+  el.style.textShadow = `0 0 18px ${color(hueFor(0,2),60,0.9)}`;
+  el.style.opacity = 1;
+  let i = 0;
+  const iv = setInterval(() => {
+    i += 0.35;
+    el.textContent = target.split("").map((ch, j) => j < i ? ch : (ch === " " ? " " : rg())).join("");
+    if (i >= target.length) { clearInterval(iv); el.textContent = target; setTimeout(() => el.style.opacity = 0, 1800); }
+  }, 45);
+}
+
+// 菜单（长按打开）
+const menu = document.getElementById("menu");
+const SPEEDS = [0.5, 1, 1.6];
+function closeMenu() { menu.classList.remove("on"); }
+menu.addEventListener("pointerdown", e => e.stopPropagation());
+menu.addEventListener("pointerup", e => e.stopPropagation());
+document.getElementById("bPhoto").onclick = () => { closeMenu(); document.getElementById("file").click(); };
+document.getElementById("bClear").onclick = () => {
+  closeMenu(); img = null; lum = null; tint = null;
+  try { localStorage.removeItem(STORE + ".photo"); } catch (e) {}
+  build();
+};
+document.getElementById("bSpeed").onclick = () => {
+  const i = (SPEEDS.indexOf(SETTINGS.speed) + 1) % SPEEDS.length;
+  SETTINGS.speed = SPEEDS[i]; save(); build();
+  document.getElementById("bSpeed").textContent = ["🐢 慢", "⚡ 中", "🐇 快"][i];
+};
+document.getElementById("bTitle").onclick = () => {
+  const t = prompt("开场标题（留空就不显示）", SETTINGS.title);
+  if (t === null) return;
+  SETTINGS.title = t.trim(); save(); closeMenu(); typeTitle();
+};
+
+// 交互
+let lastTap = 0, dragX = null, moved = false, pressTimer = null, longPressed = false;
+addEventListener("pointerdown", e => {
+  dragX = e.clientX; moved = false; longPressed = false;
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => { longPressed = true; menu.classList.add("on"); if (navigator.vibrate) navigator.vibrate(15); }, 600);
+});
+addEventListener("pointermove", e => {
+  if (dragX === null) return;
+  const dx = e.clientX - dragX;
+  if (Math.abs(dx) > 8) { moved = true; clearTimeout(pressTimer); windTarget = Math.max(-6, Math.min(6, dx / 30)); }
+});
+addEventListener("pointerup", e => {
+  dragX = null; clearTimeout(pressTimer);
+  if (longPressed) return;
+  if (menu.classList.contains("on")) { closeMenu(); return; }
+  if (moved) { setTimeout(() => windTarget = 0, 1500); return; }
+  const now = Date.now();
+  if (now - lastTap < 300) { paused = !paused; lastTap = 0; return; }
+  lastTap = now;
+  setTimeout(() => {
+    if (lastTap !== now) return;
+    themeIdx = (themeIdx + 1) % ORDER.length;
+    SETTINGS.theme = ORDER[themeIdx]; save();
+    ripples.push({x: e.clientX, y: e.clientY, r: 0, a: 1});
+    if (navigator.vibrate) navigator.vibrate(10);
+  }, 300);
+});
+addEventListener("resize", () => { tint = null; build(); });
+addEventListener("contextmenu", e => e.preventDefault());
+
+build();
+requestAnimationFrame(frame);
+setTimeout(typeTitle, 400);
+setTimeout(() => { const h = document.getElementById("hint"); h.style.opacity = .55; setTimeout(() => h.style.opacity = 0, 4000); }, 3200);
+</script>
+</body>
+</html>
