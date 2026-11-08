@@ -59,6 +59,7 @@
   <button id="bClear">✕ 去照片</button>
   <button id="bSpeed">⚡ 速度</button>
   <button id="bTitle">🔤 标题</button>
+  <button id="bLang">🌐 EN</button>
 </div>
 <input id="file" type="file" accept="image/*">
 <script>
@@ -304,13 +305,37 @@ document.getElementById("bClear").onclick = () => {
 document.getElementById("bSpeed").onclick = () => {
   const i = (SPEEDS.indexOf(SETTINGS.speed) + 1) % SPEEDS.length;
   SETTINGS.speed = SPEEDS[i]; save(); build();
-  document.getElementById("bSpeed").textContent = ["🐢 慢", "⚡ 中", "🐇 快"][i];
+  document.getElementById("bSpeed").textContent = T.speeds[i];
 };
 document.getElementById("bTitle").onclick = () => {
-  const t = prompt("开场标题（留空就不显示）", SETTINGS.title);
+  const t = prompt(T.titleAsk, SETTINGS.title);
   if (t === null) return;
   SETTINGS.title = t.trim(); save(); closeMenu(); typeTitle();
 };
+
+// ===== 中英文界面：?lang=en / ?lang=zh，没指定就跟手机语言 =====
+const LANG = {
+  zh: {hint: "点一下换颜色 · 拖动吹风 · 双击暂停 · 长按打开菜单",
+    bHud: "🕒 信息", bNote: "📝 备忘", bPhoto: "📷 照片", bClear: "✕ 去照片", bSpeed: "⚡ 速度", bTitle: "🔤 标题", bLang: "🌐 EN",
+    speeds: ["🐢 慢", "⚡ 中", "🐇 快"], city: "吉隆坡",
+    titleAsk: "开场标题（留空就不显示）", noteAsk: "备忘（多条用分号隔开，留空就不显示）"},
+  en: {hint: "Tap: colour · Drag: wind · Double-tap: pause · Long-press: menu",
+    bHud: "🕒 Info", bNote: "📝 Notes", bPhoto: "📷 Photo", bClear: "✕ No photo", bSpeed: "⚡ Speed", bTitle: "🔤 Title", bLang: "🌐 中文",
+    speeds: ["🐢 Slow", "⚡ Normal", "🐇 Fast"], city: "KUALA LUMPUR",
+    titleAsk: "Intro title (leave empty to hide)", noteAsk: "Notes (separate items with ;  leave empty to hide)"}
+};
+if (!SETTINGS.lang) SETTINGS.lang = Q.get("lang") || (/^zh/i.test(navigator.language) ? "zh" : "en");
+let T = LANG[SETTINGS.lang] || LANG.en;
+function applyLang() {
+  T = LANG[SETTINGS.lang] || LANG.en;
+  document.documentElement.lang = SETTINGS.lang;
+  document.getElementById("hint").textContent = T.hint;
+  for (const id of ["bHud", "bNote", "bPhoto", "bClear", "bSpeed", "bTitle", "bLang"]) document.getElementById(id).textContent = T[id];
+}
+document.getElementById("bLang").onclick = () => {
+  SETTINGS.lang = SETTINGS.lang === "en" ? "zh" : "en"; save(); applyLang(); weather();
+};
+applyLang();
 
 // ===== 锁屏风格信息层：时间、币价、天气、名言、备忘 =====
 const hud = document.getElementById("hud");
@@ -351,7 +376,7 @@ async function weather() {
   try {
     const r = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=3.139&longitude=101.687&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,sunset&timezone=Asia%2FKuala_Lumpur&forecast_days=1")).json();
     document.getElementById("hWx").textContent =
-      `吉隆坡 ${WX(r.current.weather_code)} · NOW ${Math.round(r.current.temperature_2m)}°C · H ${Math.round(r.daily.temperature_2m_max[0])}° L ${Math.round(r.daily.temperature_2m_min[0])}° · SUNSET ${r.daily.sunset[0].slice(11)}`;
+      `${T.city} ${WX(r.current.weather_code)} · NOW ${Math.round(r.current.temperature_2m)}°C · H ${Math.round(r.daily.temperature_2m_max[0])}° L ${Math.round(r.daily.temperature_2m_min[0])}° · SUNSET ${r.daily.sunset[0].slice(11)}`;
   } catch (e) {}
 }
 const QUOTES = ["WAKE UP...", "FOLLOW THE\nWHITE RABBIT", "THERE IS\nNO SPOON", "FREE YOUR MIND", "KNOCK, KNOCK", "WHOA\n-NEO"];
@@ -370,7 +395,7 @@ document.getElementById("bHud").onclick = () => {
   SETTINGS.hud = HUDS[(HUDS.indexOf(SETTINGS.hud) + 1) % HUDS.length]; save(); applyHud();
 };
 document.getElementById("bNote").onclick = () => {
-  const t = prompt("备忘（多条用分号隔开，留空就不显示）", SETTINGS.note);
+  const t = prompt(T.noteAsk, SETTINGS.note);
   if (t === null) return;
   SETTINGS.note = t.trim(); save(); closeMenu(); applyHud();
 };
